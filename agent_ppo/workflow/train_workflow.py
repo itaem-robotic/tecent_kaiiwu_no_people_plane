@@ -6,14 +6,16 @@
 """
 Author: Tencent AI Arena Authors
 
-Training workflow for Blank PPO (environment-agnostic starter template).
-空白版 PPO 训练工作流（与环境无关的起步模板）。
+Drone Delivery training workflow.
+智运无人机训练工作流。
 """
+
 
 import os
 import time
 
 import numpy as np
+from agent_ppo.conf.conf import Config
 from agent_ppo.feature.definition import SampleData, sample_process
 from tools.metrics_utils import get_training_metrics
 from tools.train_env_conf_validate import read_usr_conf
@@ -21,14 +23,17 @@ from common_python.utils.workflow_disaster_recovery import handle_disaster_recov
 
 
 def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
+    """Training entry point called by the platform.
+
+    训练入口，平台调用。
+    """
     last_save_model_time = time.time()
     env = envs[0]
     agent = agents[0]
 
-    # Read user config / 读取用户配置
     usr_conf = read_usr_conf("agent_ppo/conf/train_env_conf.toml", logger)
     if usr_conf is None:
-        logger.error("usr_conf is None, please check agent_ppo/conf/train_env_conf.toml")
+        logger.error("usr_conf is None, check agent_ppo/conf/train_env_conf.toml")
         return
 
     episode_runner = EpisodeRunner(
@@ -45,12 +50,17 @@ def workflow(envs, agents, logger=None, monitor=None, *args, **kwargs):
             g_data.clear()
 
             now = time.time()
-            if now - last_save_model_time >= 1800:
+            if now - last_save_model_time >= 600:
                 agent.save_model()
                 last_save_model_time = now
 
 
 class EpisodeRunner:
+    """Single-episode runner.
+
+    单局运行器。
+    """
+
     def __init__(self, env, agent, usr_conf, logger, monitor):
         self.env = env
         self.agent = agent
@@ -59,53 +69,49 @@ class EpisodeRunner:
         self.monitor = monitor
         self.episode_cnt = 0
         self.last_report_monitor_time = 0
-        self.last_get_training_metrics_time = 0
+        self.last_training_metrics_time = 0
 
     def run_episodes(self):
-        """Run a single episode and yield collected samples.
+        """Run one episode and yield the sample list.
 
-        执行单局对局并 yield 训练样本。
+        运行一局并 yield 样本列表。
         """
         while True:
-            # Periodically fetch training metrics / 定期获取训练指标
+            # Print training metrics periodically / 定期打印训练指标
             now = time.time()
-            if now - self.last_get_training_metrics_time >= 60:
-                training_metrics = get_training_metrics()
-                self.last_get_training_metrics_time = now
-                if training_metrics is not None:
-                    self.logger.info(f"training_metrics is {training_metrics}")
+            if now - self.last_training_metrics_time >= 60:
+                metrics = get_training_metrics()
+                self.last_training_metrics_time = now
+                if metrics:
+                    self.logger.info(f"training_metrics: {metrics}")
 
-            # Reset env / 重置环境
+            # Reset environment / 重置环境
             env_obs = self.env.reset(self.usr_conf)
-
-            # Disaster recovery / 容灾处理
             if handle_disaster_recovery(env_obs, self.logger):
                 continue
 
-            # Reset agent & load latest model / 重置 Agent 并加载最新模型
             self.agent.reset(env_obs)
             self.agent.load_model(id="latest")
 
-            # Initial observation / 初始观测处理
             obs_data, remain_info = self.agent.observation_process(env_obs)
 
             collector = []
             self.episode_cnt += 1
             done = False
             step = 0
-            total_reward = 0.0
+            total_delivered = 0
+            total_reward_sum = 0.0
 
-            self.logger.info(f"Episode {self.episode_cnt} start")
+            self.logger.info(f"Episode {self.episode_cnt} start, conf={self.usr_conf}")
 
+            # Main loop / 主循环
             while not done:
-                # Predict action / Agent 推理
+                # Inference / 推理
                 act_data = self.agent.predict(list_obs_data=[obs_data])[0]
                 act = self.agent.action_process(act_data)
 
-                # Step env / 与环境交互
+                # Environment step / 环境交互
                 env_reward, env_obs = self.env.step(act)
-
-                # Disaster recovery / 容灾处理
                 if handle_disaster_recovery(env_obs, self.logger):
                     break
 
@@ -114,20 +120,35 @@ class EpisodeRunner:
                 step += 1
                 done = terminated or truncated
 
-                # Next observation / 处理下一步观测
+                # Next step observation / 下一步观测
                 _obs_data, _remain_info = self.agent.observation_process(env_obs)
 
-                # Step reward (blank: always 0) / 每步即时奖励
-                reward = np.array(_remain_info.get("reward", [0.0]), dtype=np.float32)
-                total_reward += float(reward[0])
+                # Reward (from preprocessor, single channel) / 奖励（来自 preprocessor，单通道 list[float]）
+                reward = np.array(self.agent.preprocessor._reward_process(), dtype=np.float32)
 
-                # Terminal reward / 终局奖励
-                final_reward = np.zeros(1, dtype=np.float32)
+                total_reward_sum += float(reward.sum())
+
+                # End-of-episode additional reward / 局末额外奖励
+                final_reward = np.zeros(Config.VALUE_NUM, dtype=np.float32)
                 if done:
-                    result_str = "TERMINATED" if terminated else "TRUNCATED"
+                    total_delivered = self.agent.preprocessor.delivered
+                    total_score = env_obs["observation"]["env_info"].get("total_score", 0)
+
+                    if terminated:
+                        # Abnormal termination (collision or energy depleted): small penalty
+                        # 异常终止（碰撞 or 电量耗尽）：给小惩罚
+                        final_reward[0] = -1.0
+                        result_str = "FAIL"
+                    else:
+                        # Normal end: reached max steps
+                        # 正常到达最大步数
+                        final_reward[0] = 0.0
+                        result_str = "WIN"
+
                     self.logger.info(
-                        f"[GAMEOVER] episode:{self.episode_cnt} steps:{step} "
-                        f"result:{result_str} total_reward:{total_reward:.3f}"
+                        f"[GAMEOVER] ep:{self.episode_cnt} steps:{step} "
+                        f"result:{result_str} delivered:{total_delivered} "
+                        f"score:{total_score} total_reward:{total_reward_sum:.2f}"
                     )
 
                 # Build sample frame / 构造样本帧
@@ -137,35 +158,37 @@ class EpisodeRunner:
                     act=np.array([act_data.action[0]], dtype=np.float32),
                     reward=reward,
                     done=np.array([float(done)], dtype=np.float32),
-                    reward_sum=np.zeros(1, dtype=np.float32),
-                    value=np.array(act_data.value, dtype=np.float32).flatten()[:1],
-                    next_value=np.zeros(1, dtype=np.float32),
-                    advantage=np.zeros(1, dtype=np.float32),
+                    value=act_data.value.flatten()[: Config.VALUE_NUM],
+                    next_value=np.zeros(Config.VALUE_NUM, dtype=np.float32),
+                    advantage=np.zeros(Config.VALUE_NUM, dtype=np.float32),
                     prob=np.array(act_data.prob, dtype=np.float32),
+                    reward_sum=np.zeros(Config.VALUE_NUM, dtype=np.float32),
                 )
                 collector.append(frame)
 
-                # Episode end / 对局结束
+                # End of episode: merge final_reward, compute GAE, yield
+                # 局末：合并 final_reward、GAE、yield
                 if done:
-                    if collector:
+                    if len(collector) > 0:
                         collector[-1].reward = collector[-1].reward + final_reward
 
-                    # Monitor report / 监控上报
                     now = time.time()
                     if now - self.last_report_monitor_time >= 60 and self.monitor:
-                        monitor_data = {
-                            "reward": round(total_reward + float(final_reward[0]), 4),
-                            "episode_steps": step,
-                            "episode_cnt": self.episode_cnt,
-                        }
-                        self.monitor.put_data({os.getpid(): monitor_data})
+                        self.monitor.put_data(
+                            {
+                                os.getpid(): {
+                                    "reward": round(total_reward_sum + final_reward[0], 4),
+                                    "episode_cnt": self.episode_cnt,
+                                    "delivered": total_delivered,
+                                }
+                            }
+                        )
                         self.last_report_monitor_time = now
 
-                    if collector:
+                    if len(collector) > 0:
                         collector = sample_process(collector)
                         yield collector
                     break
 
-                # Update state / 状态更新
                 obs_data = _obs_data
                 remain_info = _remain_info
