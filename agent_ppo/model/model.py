@@ -66,7 +66,7 @@ class Model(nn.Module):
         feature_len = Config.FEATURE_LEN
         action_num = Config.ACTION_NUM
         value_num = Config.VALUE_NUM
-        hidden_dim = 128
+        hidden_dim = 256
 
         # Backbone network / 主干网络
         self.backbone = MLP(

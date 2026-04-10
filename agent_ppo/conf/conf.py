@@ -19,13 +19,16 @@ class Config:
     LEGAL_ACT_DIM = 8
     INDICATOR_DIM = 3
     ASTAR_ACTION_DIM = 8
+    NPC_FEAT_DIM = 3   # 是否存在+距离+方向点积
 
     FEATURES = [
         HERO_STATE_DIM,
         STATION_DIM,
         LEGAL_ACT_DIM,
         INDICATOR_DIM,
-        ASTAR_ACTION_DIM
+        ASTAR_ACTION_DIM,
+        NPC_FEAT_DIM
+
     ]
     FEATURE_SPLIT_SHAPE = FEATURES
     FEATURE_LEN = sum(FEATURES)
@@ -42,11 +45,14 @@ class Config:
     # PPO hyperparameters / PPO 超参数
     GAMMA = 0.995
     LAMDA = 0.95
-    INIT_LEARNING_RATE_START = 0.0003
+    INIT_LEARNING_RATE_START = 0.0002
+    # LR_DECAY_RATE = 0.995        # 每 decay_steps 步乘以该系数
+    # LR_DECAY_STEPS = 200         # 每多少步衰减一次（例如每 100 次 learn 调用）
+    LR_MIN = 1e-5 
     # Moderate entropy coeff / 中等熵系数
-    BETA_START = 0.005
+    BETA_START = 0.008
     CLIP_PARAM = 0.2
-    VF_COEF = 0.5
+    VF_COEF = 0.6
     GRAD_CLIP_RANGE = 0.5
     USE_GRAD_CLIP = True
 

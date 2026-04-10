@@ -52,6 +52,14 @@ def sample_process(list_sample_data):
         list_sample_data[i].next_value = list_sample_data[i + 1].value
 
     _calc_gae(list_sample_data)
+
+    #优势归一化
+    # adv_list = [s.advantage for s in list_sample_data]
+    # adv_mean = np.mean(adv_list)
+    # adv_std = np.std(adv_list) + 1e-8
+    # for s in list_sample_data:
+    #     s.advantage = (s.advantage - adv_mean) / adv_std
+    #     s.reward_sum = s.advantage + s.value
     return list_sample_data
 
 
